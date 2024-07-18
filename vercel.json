@@ -8,7 +8,7 @@
   ],
   "functions": {
     "api/app.js": {
-      "maxDuration": 80
+      "maxDuration": 60
     }
   }
 }
