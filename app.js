@@ -7,10 +7,18 @@ import cors from 'cors'
 const app = express();
 
 app.use(cors());
+
+app.use(cors({
+  origin: 'http://localhost:5173',
+  methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+  credentials: true,
+}));
+
 app.get('/', (req, res)=>{
   res.status(200).json({message:"Ok"});
 });
-app.post("/googlem-map-extractor", (req, res) => {
+
+app.post("/google-map-extractor", (req, res) => {
   const query = req.query.query;
   async function searchGoogleMaps() {
     try {
