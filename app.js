@@ -2,11 +2,11 @@ import * as cheerio from "cheerio";
 import puppeteerExtra from "puppeteer-extra";
 import stealthPlugin from "puppeteer-extra-plugin-stealth";
 import express from "express";
-import cors from 'cors'
+import cors from 'cors';
 
 const app = express();
-
 app.use(cors());
+app.use(express.json());
 
 app.use(cors({
   origin: 'http://localhost:5173',
@@ -14,32 +14,45 @@ app.use(cors({
   credentials: true,
 }));
 
-app.get('/', (req, res)=>{
-  res.status(200).json({message:"Ok"});
+app.get('/', (req, res) => {
+  res.status(200).json({ message: "Ok" });
 });
 
 app.post("/google-map-extractor", (req, res) => {
   const query = req.query.query;
-  async function searchGoogleMaps() {
+
+  if (!query) {
+    return res.status(403).json({ message: "query should not be blank!" });
+  }
+
+  const searchGoogleMaps = async () => {
     try {
       const start = Date.now();
 
       puppeteerExtra.use(stealthPlugin());
 
       const browser = await puppeteerExtra.launch({
-        headless: false,
-        executablePath: "", // your path here
+        headless: true, // Change this to true for better performance on serverless
       });
 
       const page = await browser.newPage();
 
-      try {
-        await page.goto(
-          `https://www.google.com/maps/search/${query.split(" ").join("+")}`
-        );
-      } catch (error) {
-        console.log("error going to page");
-      }
+      // Block unnecessary resources
+      await page.setRequestInterception(true);
+      page.on('request', (req) => {
+        const resourceType = req.resourceType();
+        if (['stylesheet', 'font', 'image', 'media', 'other'].includes(resourceType)) {
+          req.abort();
+        } else {
+          req.continue();
+        }
+      });
+
+      await page.goto(`https://www.google.com/maps/search/${query.split(" ").join("+")}`, {
+        waitUntil: 'networkidle2', // Wait until the network is idle
+      });
+
+      await page.waitForSelector('div[role="feed"]');
 
       async function autoScroll(page) {
         await page.evaluate(async () => {
@@ -61,14 +74,11 @@ app.post("/google-map-extractor", (req, res) => {
                   setTimeout(resolve, scrollDelay)
                 );
 
-                // Calculate scrollHeight after waiting
                 var scrollHeightAfter = wrapper.scrollHeight;
 
                 if (scrollHeightAfter > scrollHeightBefore) {
-                  // More content loaded, keep scrolling
                   return;
                 } else {
-                  // No more content loaded, stop scrolling
                   clearInterval(timer);
                   resolve();
                 }
@@ -81,50 +91,32 @@ app.post("/google-map-extractor", (req, res) => {
       await autoScroll(page);
 
       const html = await page.content();
-      const pages = await browser.pages();
-      await Promise.all(pages.map((page) => page.close()));
-
       await browser.close();
-      console.log("browser closed");
 
-      // get all a tag parent where a tag href includes /maps/place/
       const $ = cheerio.load(html);
       const aTags = $("a");
       const parents = [];
       aTags.each((i, el) => {
         const href = $(el).attr("href");
-        if (!href) {
-          return;
-        }
-        if (href.includes("/maps/place/")) {
+        if (href && href.includes("/maps/place/")) {
           parents.push($(el).parent());
         }
       });
 
-      console.log("parents", parents.length);
-
       const data = [];
-
       parents.forEach((parent) => {
         const url = parent.find("a").attr("href");
-        // get a tag where data-value="Website"
         const website = parent.find('a[data-value="Website"]').attr("href");
-        // find a div that includes the class fontHeadlineSmall
         const title = parent.find("div.fontHeadlineSmall").text();
-        // find span that includes class fontBodyMedium
-        const ratingText = parent
-          .find("span.fontBodyMedium > span")
-          .attr("aria-label");
+        const ratingText = parent.find("span.fontBodyMedium > span").attr("aria-label");
 
-        // get the first div that includes the class fontBodyMedium
         const bodyDiv = parent.find("div.fontBodyMedium").first();
         const children = bodyDiv.children();
         const lastChild = children.last();
         const firstOfLast = lastChild.children().first();
         const lastOfLast = lastChild.children().last();
-        
+
         data.push({
-          // placeId: `ChI${url?.split("?")?.[0]?.split("ChI")?.[1]}`,
           address: firstOfLast?.text()?.split("·")?.[1]?.trim() || "",
           category: firstOfLast?.text()?.split("·")?.[0]?.trim() || "",
           phone: lastOfLast?.text()?.split("·")?.[1]?.trim() || "",
@@ -132,41 +124,28 @@ app.post("/google-map-extractor", (req, res) => {
           website: website || "",
           title,
           ratingText,
-          stars: ratingText?.split("stars")?.[0]?.trim()
-            ? Number(ratingText?.split("stars")?.[0]?.trim())
-            : '',
-          reviews: ratingText
-            ?.split("stars")?.[1]
-            ?.replace("Reviews", "")
-            ?.trim()
-            ? Number(
-                ratingText?.split("stars")?.[1]?.replace("Reviews", "")?.trim()
-              )
-            : '',
+          stars: ratingText?.split("stars")?.[0]?.trim() ? Number(ratingText?.split("stars")?.[0]?.trim()) : '',
+          reviews: ratingText?.split("stars")?.[1]?.replace("Reviews", "")?.trim() ? Number(ratingText?.split("stars")?.[1]?.replace("Reviews", "")?.trim()) : '',
         });
       });
+
       const end = Date.now();
-      if(data.length){
-        res.status(200).json({data});
-        console.log(data.length);
+      console.log(`Time in seconds ${Math.floor((end - start) / 1000)}`);
+
+      if (data.length) {
+        res.status(200).json({ data });
+      } else {
+        res.status(204).json({ message: "No data found" });
       }
-
-      console.log(`time in seconds ${Math.floor((end - start) / 1000)}`);
-
-      return data;
     } catch (error) {
-      console.log("error at googleMaps", error.message);
+      console.log("Error at googleMaps", error.message);
+      res.status(500).json({ error: "Internal server error" });
     }
-  }
+  };
 
-  if(query){
-    searchGoogleMaps();
-  }
-  else {
-    res.status(403).json({message:"query should not be blank!"});
-  }
+  searchGoogleMaps();
 });
 
-app.listen(2000, ()=>{
-  console.log(`server running on http://localhost:2000`);
-})
+app.listen(2000, () => {
+  console.log(`Server running on http://localhost:2000`);
+});

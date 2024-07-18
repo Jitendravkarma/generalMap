@@ -3,11 +3,11 @@
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "api/app.js"
+      "dest": "app.js"
     }
   ],
   "functions": {
-    "api/app.js": {
+    "app.js": {
       "maxDuration": 60
     }
   }
